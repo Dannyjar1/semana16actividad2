@@ -1,0 +1,560 @@
+/*
+ * ============================================================
+ * Modelo YANG — Gemelo Digital para Resiliencia Urbana de Loja
+ * Gestión de sensores IoT via NETCONF
+ * UIDE — Tecnologías Emergentes — 8.° Ciclo
+ * ============================================================
+ */
+
+module loja-digital-twin {
+
+    namespace "urn:uide:loja:digital-twin";
+    prefix ldt;
+
+    import ietf-yang-types {
+        prefix yang;
+    }
+
+    import ietf-inet-types {
+        prefix inet;
+    }
+
+    organization
+        "Universidad Internacional del Ecuador — Sede Loja
+         Carrera de Ingeniería en Tecnologías de la Información";
+
+    contact
+        "Proyecto Gemelo Digital de Resiliencia Urbana
+         Loja, Ecuador";
+
+    description
+        "Modelo YANG para la gestión centralizada de la
+         infraestructura de sensores IoT del gemelo digital
+         de la ciudad de Loja. Define jerarquías de datos,
+         estados de salud de dispositivos y umbrales de alerta
+         configurables remotamente vía NETCONF.";
+
+    revision 2026-02-24 {
+        description "Versión inicial con soporte para sensores
+                     hidrológicos, de calidad de aire y tráfico.";
+    }
+
+    /* ════════════════════════════════════════════════════
+       TIPOS PERSONALIZADOS
+       ════════════════════════════════════════════════════ */
+
+    typedef sensor-type {
+        type enumeration {
+            enum river-level {
+                value 1;
+                description "Sensor de nivel de río (VEGAPULS C21)";
+            }
+            enum flow-velocity {
+                value 2;
+                description "Velocímetro Doppler (Teledyne ISCO 2150)";
+            }
+            enum air-quality {
+                value 3;
+                description "Sensor PM2.5/PM10 (Sensirion SPS30)";
+            }
+            enum traffic {
+                value 4;
+                description "Cámara IP + radar (Bosch MIC IP 7100i)";
+            }
+            enum weather {
+                value 5;
+                description "Sensor ambiental (Bosch BME280)";
+            }
+            enum precipitation {
+                value 6;
+                description "Pluviómetro (Davis 6466M)";
+            }
+        }
+        description "Tipos de sensores desplegados en el gemelo digital.";
+    }
+
+    typedef device-status {
+        type enumeration {
+            enum operational {
+                value 0;
+                description "Dispositivo funcionando normalmente.";
+            }
+            enum degraded {
+                value 1;
+                description "Rendimiento reducido pero funcional.";
+            }
+            enum maintenance {
+                value 2;
+                description "Dispositivo en mantenimiento programado.";
+            }
+            enum offline {
+                value 3;
+                description "Dispositivo fuera de línea.";
+            }
+            enum critical {
+                value 4;
+                description "Fallo crítico detectado.";
+            }
+        }
+        description "Estado operativo del sensor o gateway.";
+    }
+
+    typedef alert-severity {
+        type enumeration {
+            enum info {
+                value 0;
+                description "Informativo, no requiere acción.";
+            }
+            enum warning {
+                value 1;
+                description "Atención requerida, no urgente.";
+            }
+            enum critical {
+                value 2;
+                description "Acción inmediata requerida.";
+            }
+            enum emergency {
+                value 3;
+                description "Peligro para vidas humanas.";
+            }
+        }
+        description "Niveles de severidad para alertas del sistema.";
+    }
+
+    /* ════════════════════════════════════════════════════
+       GROUPINGS REUTILIZABLES
+       ════════════════════════════════════════════════════ */
+
+    grouping device-health {
+        description "Métricas de salud comunes para cualquier dispositivo.";
+
+        leaf cpu-usage {
+            type uint8 {
+                range "0..100";
+            }
+            units "percent";
+            description "Porcentaje de uso de CPU del dispositivo.";
+        }
+
+        leaf memory-usage {
+            type uint8 {
+                range "0..100";
+            }
+            units "percent";
+            description "Porcentaje de uso de memoria RAM.";
+        }
+
+        leaf battery-level {
+            type uint8 {
+                range "0..100";
+            }
+            units "percent";
+            description "Nivel de batería restante.";
+        }
+
+        leaf uptime {
+            type yang:counter64;
+            units "seconds";
+            description "Tiempo transcurrido desde el último reinicio.";
+        }
+
+        leaf temperature {
+            type decimal64 {
+                fraction-digits 1;
+            }
+            units "celsius";
+            description "Temperatura interna del dispositivo.";
+        }
+
+        leaf status {
+            type device-status;
+            default "operational";
+            description "Estado operativo actual del dispositivo.";
+        }
+
+        leaf last-heartbeat {
+            type yang:date-and-time;
+            description "Timestamp del último heartbeat recibido.";
+        }
+    }
+
+    grouping alert-thresholds {
+        description "Umbrales de alerta configurables para cada tipo de sensor.";
+
+        leaf warning-threshold {
+            type decimal64 {
+                fraction-digits 2;
+            }
+            description "Valor que dispara una alerta de advertencia.";
+        }
+
+        leaf critical-threshold {
+            type decimal64 {
+                fraction-digits 2;
+            }
+            description "Valor que dispara una alerta crítica.";
+        }
+
+        leaf emergency-threshold {
+            type decimal64 {
+                fraction-digits 2;
+            }
+            description "Valor que dispara una emergencia municipal.";
+        }
+
+        leaf hysteresis {
+            type decimal64 {
+                fraction-digits 2;
+            }
+            default "0.10";
+            description
+                "Valor de histéresis para evitar alertas oscilantes.
+                 La alerta se desactiva cuando el valor baja threshold - hysteresis.";
+        }
+    }
+
+    grouping sampling-config {
+        description "Configuración de muestreo del sensor.";
+
+        leaf sampling-interval {
+            type uint16 {
+                range "1..3600";
+            }
+            units "seconds";
+            description "Intervalo entre lecturas consecutivas.";
+        }
+
+        leaf transmission-interval {
+            type uint16 {
+                range "1..3600";
+            }
+            units "seconds";
+            description "Intervalo entre transmisiones agregadas al cloud.";
+        }
+
+        leaf protocol {
+            type enumeration {
+                enum mqtt { value 1; description "Protocolo MQTT 5.0 sobre TLS 1.3."; }
+                enum coap { value 2; description "CoAP sobre DTLS (redes de baja potencia)."; }
+                enum http { value 3; description "HTTP/2 para integraciones REST."; }
+            }
+            default "mqtt";
+            description "Protocolo de transmisión hacia el Edge Gateway.";
+        }
+    }
+
+    /* ════════════════════════════════════════════════════
+       CONTENEDOR PRINCIPAL: INFRAESTRUCTURA DE SENSORES
+       ════════════════════════════════════════════════════ */
+
+    container digital-twin-infrastructure {
+        description "Raíz de la infraestructura del gemelo digital de Loja.";
+
+        /* Configuración global del sistema */
+        container global-config {
+            description "Parámetros globales del sistema.";
+
+            leaf system-name {
+                type string;
+                default "Loja Digital Twin";
+                description "Nombre del sistema gemelo digital.";
+            }
+
+            leaf operator-contact {
+                type string;
+                description "Contacto del operador del centro de control.";
+            }
+
+            leaf ntp-server {
+                type inet:host;
+                default "pool.ntp.org";
+                description "Servidor NTP para sincronización temporal.";
+            }
+
+            leaf data-retention-days {
+                type uint16;
+                default 365;
+                description "Días de retención de datos históricos.";
+            }
+
+            leaf blockchain-enabled {
+                type boolean;
+                default true;
+                description "Activa el registro inmutable en blockchain permisionada.";
+            }
+        }
+
+        /* Lista de Edge Gateways distribuidos por la ciudad */
+        list gateway {
+            key "gateway-id";
+            description "Edge Gateways (Raspberry Pi 4) distribuidos por la ciudad.";
+
+            leaf gateway-id {
+                type string {
+                    pattern '[A-Z]{2}-GW-[0-9]{3}';
+                }
+                description
+                    "Identificador único del gateway. Formato: ZZ-GW-001
+                     ZZ = zona (ZA=Zamora, ML=Malacatos, JP=Jipiro, CH=Centro Histórico).";
+            }
+
+            leaf location-name {
+                type string;
+                description "Nombre descriptivo de la ubicación. Ej: 'Puente Zamora Sur'.";
+            }
+
+            leaf latitude {
+                type decimal64 { fraction-digits 6; }
+                description "Latitud WGS84.";
+            }
+
+            leaf longitude {
+                type decimal64 { fraction-digits 6; }
+                description "Longitud WGS84.";
+            }
+
+            leaf ip-address {
+                type inet:ipv4-address;
+                description "Dirección IPv4 del gateway en la red 5G.";
+            }
+
+            leaf firmware-version {
+                type string;
+                description "Versión del firmware instalado.";
+            }
+
+            uses device-health;
+
+            /* Sensores conectados a este gateway */
+            list sensor {
+                key "sensor-id";
+                description "Sensores IoT conectados a este gateway vía BLE/MQTT-SN.";
+
+                leaf sensor-id {
+                    type string {
+                        pattern '[A-Z]{2}-S[0-9]{2}-[A-Z]{3}';
+                    }
+                    description "ID del sensor. Formato: ZA-S01-RIV (zona-número-tipo).";
+                }
+
+                leaf type {
+                    type sensor-type;
+                    mandatory true;
+                    description "Tipo de fenómeno que mide este sensor.";
+                }
+
+                leaf model {
+                    type string;
+                    description "Modelo comercial del sensor. Ej: VEGAPULS C21.";
+                }
+
+                leaf unit {
+                    type string;
+                    description "Unidad de medida. Ej: 'm', 'µg/m³', 'km/h'.";
+                }
+
+                leaf current-value {
+                    type decimal64 { fraction-digits 4; }
+                    config false;
+                    description "Último valor leído (solo lectura, dato operacional).";
+                }
+
+                leaf current-value-timestamp {
+                    type yang:date-and-time;
+                    config false;
+                    description "Timestamp del último valor leído.";
+                }
+
+                uses device-health;
+                uses alert-thresholds;
+                uses sampling-config;
+            }
+        }
+
+        /* Estadísticas globales (solo lectura) */
+        container statistics {
+            config false;
+            description "Contadores operacionales del sistema.";
+
+            leaf total-gateways {
+                type uint16;
+                description "Total de gateways registrados.";
+            }
+
+            leaf active-gateways {
+                type uint16;
+                description "Gateways actualmente operativos.";
+            }
+
+            leaf total-sensors {
+                type uint32;
+                description "Total de sensores registrados.";
+            }
+
+            leaf active-alerts {
+                type uint16;
+                description "Alertas activas en este momento.";
+            }
+
+            leaf messages-per-second {
+                type decimal64 { fraction-digits 2; }
+                description "Mensajes MQTT procesados por segundo.";
+            }
+
+            leaf blockchain-records-24h {
+                type uint32;
+                description "Registros escritos en blockchain en las últimas 24h.";
+            }
+        }
+    }
+
+    /* ════════════════════════════════════════════════════
+       NOTIFICACIONES (Eventos asíncronos vía NETCONF)
+       ════════════════════════════════════════════════════ */
+
+    notification sensor-alert {
+        description "Alerta emitida cuando un sensor supera un umbral configurado.";
+
+        leaf sensor-id {
+            type string;
+            description "ID del sensor que generó la alerta.";
+        }
+
+        leaf gateway-id {
+            type string;
+            description "ID del gateway asociado.";
+        }
+
+        leaf severity {
+            type alert-severity;
+            description "Nivel de severidad de la alerta.";
+        }
+
+        leaf current-value {
+            type decimal64 { fraction-digits 4; }
+            description "Valor actual que disparó la alerta.";
+        }
+
+        leaf threshold-value {
+            type decimal64 { fraction-digits 4; }
+            description "Umbral configurado que fue excedido.";
+        }
+
+        leaf message {
+            type string;
+            description "Mensaje descriptivo de la alerta.";
+        }
+
+        leaf timestamp {
+            type yang:date-and-time;
+            description "Momento exacto de la alerta.";
+        }
+    }
+
+    notification gateway-status-change {
+        description "Notificación cuando un gateway cambia de estado operativo.";
+
+        leaf gateway-id {
+            type string;
+            description "ID del gateway cuyo estado cambió.";
+        }
+
+        leaf previous-status {
+            type device-status;
+            description "Estado anterior del gateway.";
+        }
+
+        leaf new-status {
+            type device-status;
+            description "Nuevo estado del gateway.";
+        }
+
+        leaf reason {
+            type string;
+            description "Razón del cambio de estado.";
+        }
+
+        leaf timestamp {
+            type yang:date-and-time;
+            description "Momento del cambio de estado.";
+        }
+    }
+
+    /* ════════════════════════════════════════════════════
+       RPCs (Operaciones remotas ejecutables vía NETCONF)
+       ════════════════════════════════════════════════════ */
+
+    rpc bulk-update-thresholds {
+        description
+            "Actualiza umbrales de alerta en múltiples gateways
+             simultáneamente. Diseñado para que el operador del
+             centro de control modifique 50+ gateways sin
+             intervención física.";
+
+        input {
+            leaf sensor-type-filter {
+                type sensor-type;
+                description "Aplica solo a sensores de este tipo.";
+            }
+
+            leaf new-warning-threshold {
+                type decimal64 { fraction-digits 2; }
+                description "Nuevo umbral de advertencia.";
+            }
+
+            leaf new-critical-threshold {
+                type decimal64 { fraction-digits 2; }
+                description "Nuevo umbral de alerta crítica.";
+            }
+
+            leaf new-emergency-threshold {
+                type decimal64 { fraction-digits 2; }
+                description "Nuevo umbral de emergencia.";
+            }
+        }
+
+        output {
+            leaf gateways-updated {
+                type uint16;
+                description "Cantidad de gateways actualizados exitosamente.";
+            }
+
+            leaf sensors-updated {
+                type uint32;
+                description "Cantidad de sensores cuyo umbral fue modificado.";
+            }
+
+            leaf status-message {
+                type string;
+                description "Mensaje de resultado de la operación.";
+            }
+        }
+    }
+
+    rpc reboot-gateway {
+        description "Reinicia remotamente un gateway específico.";
+
+        input {
+            leaf gateway-id {
+                type string;
+                mandatory true;
+                description "ID del gateway a reiniciar.";
+            }
+            leaf reason {
+                type string;
+                description "Motivo del reinicio.";
+            }
+        }
+
+        output {
+            leaf success {
+                type boolean;
+                description "True si el reinicio fue aceptado exitosamente.";
+            }
+            leaf message {
+                type string;
+                description "Mensaje de confirmación o error.";
+            }
+        }
+    }
+}
